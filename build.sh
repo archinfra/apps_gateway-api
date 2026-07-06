@@ -3,63 +3,70 @@ set -euo pipefail
 
 PACKAGE_NAME="gateway-api"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="$(cat "${ROOT_DIR}/VERSION" | tr -d '[:space:]')"
+DEFAULT_VERSION="$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")"
+VERSION="${DEFAULT_VERSION}"
+ARCH="all"
 DIST_DIR="${ROOT_DIR}/dist"
-BUILD_DIR="${ROOT_DIR}/.build/${PACKAGE_NAME}-${VERSION}"
-PAYLOAD_DIR="${BUILD_DIR}/payload"
-PAYLOAD_TAR="${BUILD_DIR}/payload.tar.gz"
-RUN_NAME="${PACKAGE_NAME}-${VERSION}.run"
-RUN_PATH="${DIST_DIR}/${RUN_NAME}"
-BASE_URL="https://github.com/kubernetes-sigs/gateway-api/releases/download/v${VERSION}"
+BUILD_ROOT="${ROOT_DIR}/.build"
+BASE_URL=""
+USE_LOCAL_ASSETS=0
+KEEP_BUILD=0
+
+ASSETS=(standard-install.yaml experimental-install.yaml)
 
 usage() {
   cat <<USAGE
 Usage: bash build.sh [options]
 
-Build a Gateway API CRD-only offline .run installer package.
+Build Gateway API CRD-only offline .run installer packages.
 
 Options:
-  --version <version>     Gateway API version without leading v. Default: ${VERSION}
-  --base-url <url>        Override release asset base URL.
-  --use-local-assets      Use assets already placed under upstream/ instead of downloading.
-  -h, --help             Show this help.
+  --arch <amd64|arm64|all>  Target installer architecture label. Default: all.
+  --version <version>       Gateway API version without leading v. Default: ${VERSION}
+  --base-url <url>          Override release asset base URL.
+  --use-local-assets        Use assets already placed under upstream/ instead of downloading.
+  --keep-build              Keep .build/ working directories after packaging.
+  -h, --help                Show this help.
 
 Expected release assets:
-  standard-install.yaml
-  experimental-install.yaml
+  upstream/standard-install.yaml
+  upstream/experimental-install.yaml
+
+Notes:
+  Gateway API is a CRD-only package here, so no Docker, Helm, jq, or Python is required.
+  The CRDs are architecture-independent, but this build emits amd64/arm64 .run files so
+  release artifacts can match normal offline delivery conventions.
 USAGE
 }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+info() { echo ">>> $*"; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
 
-USE_LOCAL_ASSETS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --arch)
+      ARCH="${2:-}"; shift 2 ;;
     --version)
       VERSION="${2:-}"; shift 2 ;;
     --base-url)
       BASE_URL="${2:-}"; shift 2 ;;
     --use-local-assets)
       USE_LOCAL_ASSETS=1; shift ;;
+    --keep-build)
+      KEEP_BUILD=1; shift ;;
     -h|--help)
       usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
+VERSION="${VERSION#v}"
 [[ -n "${VERSION}" ]] || die "version cannot be empty"
-if [[ "${BASE_URL}" == *"/v"* ]]; then
-  :
-else
+case "${ARCH}" in amd64|arm64|all) ;; *) die "--arch must be amd64, arm64, or all" ;; esac
+if [[ -z "${BASE_URL}" ]]; then
   BASE_URL="https://github.com/kubernetes-sigs/gateway-api/releases/download/v${VERSION}"
 fi
-
-RUN_NAME="${PACKAGE_NAME}-${VERSION}.run"
-RUN_PATH="${DIST_DIR}/${RUN_NAME}"
-BUILD_DIR="${ROOT_DIR}/.build/${PACKAGE_NAME}-${VERSION}"
-PAYLOAD_DIR="${BUILD_DIR}/payload"
-PAYLOAD_TAR="${BUILD_DIR}/payload.tar.gz"
 
 need tar
 need sha256sum
@@ -68,54 +75,131 @@ if [[ "${USE_LOCAL_ASSETS}" != "1" ]]; then
 fi
 
 [[ -f "${ROOT_DIR}/install.sh" ]] || die "install.sh not found"
-grep -qx '__PAYLOAD_BELOW__' "${ROOT_DIR}/install.sh" || die "install.sh must contain a standalone __PAYLOAD_BELOW__ marker"
+[[ -f "${ROOT_DIR}/images/image.json" ]] || die "images/image.json not found"
+marker_count="$(grep -cx '__PAYLOAD_BELOW__' "${ROOT_DIR}/install.sh" || true)"
+[[ "${marker_count}" == "1" ]] || die "install.sh must contain exactly one standalone __PAYLOAD_BELOW__ marker"
 bash -n "${ROOT_DIR}/install.sh"
 
-rm -rf "${BUILD_DIR}"
-mkdir -p "${PAYLOAD_DIR}/manifests" "${PAYLOAD_DIR}/images" "${PAYLOAD_DIR}/meta" "${DIST_DIR}"
+case "$(tr -d '[:space:]' < "${ROOT_DIR}/images/image.json")" in
+  "[]") ;;
+  *) die "Gateway API package is CRD-only; images/image.json must be an empty JSON array" ;;
+esac
 
-fetch_asset() {
-  local file="$1"
-  local dest="${PAYLOAD_DIR}/manifests/${file}"
-  if [[ "${USE_LOCAL_ASSETS}" == "1" ]]; then
-    [[ -f "${ROOT_DIR}/upstream/${file}" ]] || die "missing local asset: upstream/${file}"
-    cp "${ROOT_DIR}/upstream/${file}" "${dest}"
-  else
-    local url="${BASE_URL%/}/${file}"
-    echo ">>> downloading ${url}"
-    curl -fL --retry 5 --retry-delay 3 -o "${dest}" "${url}"
-  fi
-  grep -q 'kind: CustomResourceDefinition' "${dest}" || die "${file} does not look like a CRD manifest"
+arch_list() {
+  case "${ARCH}" in
+    all) printf '%s\n' amd64 arm64 ;;
+    *) printf '%s\n' "${ARCH}" ;;
+  esac
 }
 
-fetch_asset standard-install.yaml
-fetch_asset experimental-install.yaml
+platform_for_arch() {
+  case "$1" in
+    amd64) printf '%s\n' linux/amd64 ;;
+    arm64) printf '%s\n' linux/arm64 ;;
+    *) die "unsupported arch: $1" ;;
+  esac
+}
 
-cat > "${PAYLOAD_DIR}/images/image-index.tsv" <<'EOF'
+validate_asset() {
+  local file="$1"
+  grep -q 'kind:[[:space:]]*CustomResourceDefinition' "${file}" || die "${file} does not look like a CRD manifest"
+  grep -q 'gateway.networking' "${file}" || die "${file} does not look like a Gateway API manifest"
+}
+
+prepare_assets() {
+  local cache_dir="${BUILD_ROOT}/upstream-${VERSION}"
+  rm -rf "${cache_dir}"
+  mkdir -p "${cache_dir}"
+
+  local asset src url dest
+  for asset in "${ASSETS[@]}"; do
+    dest="${cache_dir}/${asset}"
+    if [[ "${USE_LOCAL_ASSETS}" == "1" ]]; then
+      src="${ROOT_DIR}/upstream/${asset}"
+      [[ -f "${src}" ]] || die "missing local asset: upstream/${asset}"
+      cp "${src}" "${dest}"
+    else
+      url="${BASE_URL%/}/${asset}"
+      info "downloading ${url}"
+      curl -fL --retry 5 --retry-delay 3 --connect-timeout 20 -o "${dest}" "${url}"
+    fi
+    validate_asset "${dest}"
+  done
+  printf '%s\n' "${cache_dir}"
+}
+
+write_image_index() {
+  local dest="$1"
+  cat > "${dest}" <<'INDEX'
 name|tar_name|load_ref|default_target_ref|platform|pull|dockerfile
-EOF
-cp "${ROOT_DIR}/images/image.json" "${PAYLOAD_DIR}/images/image.json"
+INDEX
+}
 
-cat > "${PAYLOAD_DIR}/meta/package.env" <<META
+write_manifest_index() {
+  local dest="$1"
+  cat > "${dest}" <<'INDEX'
+channel|file|apply_mode
+standard|standard-install.yaml|server-side
+experimental|experimental-install.yaml|server-side
+INDEX
+}
+
+build_one() {
+  local arch="$1"
+  local platform build_dir payload_dir payload_tar run_name run_path asset
+  platform="$(platform_for_arch "${arch}")"
+  build_dir="${BUILD_ROOT}/${PACKAGE_NAME}-${VERSION}-${arch}"
+  payload_dir="${build_dir}/payload"
+  payload_tar="${build_dir}/payload.tar.gz"
+  run_name="${PACKAGE_NAME}-${VERSION}-${arch}.run"
+  run_path="${DIST_DIR}/${run_name}"
+
+  info "building ${run_name} (${platform})"
+  rm -rf "${build_dir}"
+  mkdir -p "${payload_dir}/manifests" "${payload_dir}/images" "${payload_dir}/meta" "${DIST_DIR}"
+
+  for asset in "${ASSETS[@]}"; do
+    cp "${ASSET_CACHE_DIR}/${asset}" "${payload_dir}/manifests/${asset}"
+  done
+
+  cp "${ROOT_DIR}/images/image.json" "${payload_dir}/images/image.json"
+  write_image_index "${payload_dir}/images/image-index.tsv"
+  write_manifest_index "${payload_dir}/meta/manifest-index.tsv"
+
+  cat > "${payload_dir}/meta/package.env" <<META
 PACKAGE_NAME=${PACKAGE_NAME}
 VERSION=${VERSION}
+ARCH=${arch}
+PLATFORM=${platform}
+PACKAGE_TYPE=crd-only
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 STANDARD_ASSET=${BASE_URL%/}/standard-install.yaml
 EXPERIMENTAL_ASSET=${BASE_URL%/}/experimental-install.yaml
 META
 
-cat > "${PAYLOAD_DIR}/meta/manifest-index.tsv" <<'EOF'
-channel|file|apply_mode
-standard|standard-install.yaml|server-side
-experimental|experimental-install.yaml|server-side
-EOF
+  (cd "${payload_dir}" && tar -czf "${payload_tar}" .)
+  tar -tzf "${payload_tar}" >/dev/null
+  cat "${ROOT_DIR}/install.sh" "${payload_tar}" > "${run_path}"
+  chmod +x "${run_path}"
+  (cd "${DIST_DIR}" && sha256sum "${run_name}" > "${run_name}.sha256")
+  info "wrote ${run_path}"
+  info "wrote ${run_path}.sha256"
 
-(cd "${PAYLOAD_DIR}" && tar -czf "${PAYLOAD_TAR}" .)
-tar -tzf "${PAYLOAD_TAR}" >/dev/null
-cat "${ROOT_DIR}/install.sh" "${PAYLOAD_TAR}" > "${RUN_PATH}"
-chmod +x "${RUN_PATH}"
-(cd "${DIST_DIR}" && sha256sum "${RUN_NAME}" > "${RUN_NAME}.sha256")
+  if [[ "${KEEP_BUILD}" != "1" ]]; then
+    rm -rf "${build_dir}"
+  fi
+}
 
-echo ">>> wrote ${RUN_PATH}"
-echo ">>> wrote ${RUN_PATH}.sha256"
-ls -lh "${RUN_PATH}" "${RUN_PATH}.sha256"
+mkdir -p "${BUILD_ROOT}" "${DIST_DIR}"
+ASSET_CACHE_DIR="$(prepare_assets)"
+
+while read -r target_arch; do
+  build_one "${target_arch}"
+done < <(arch_list)
+
+if [[ "${KEEP_BUILD}" != "1" ]]; then
+  rm -rf "${ASSET_CACHE_DIR}"
+fi
+
+info "artifacts:"
+ls -lh "${DIST_DIR}"/*.run "${DIST_DIR}"/*.sha256
