@@ -115,7 +115,7 @@ prepare_chart_asset() {
     cp "${ROOT_DIR}/upstream/${asset_name}" "${asset_path}"
   else
     info "helm pull ${CHART_REF} --version ${ENVOY_GATEWAY_VERSION}"
-    helm pull "${CHART_REF}" --version "${ENVOY_GATEWAY_VERSION}" -d "${cache_dir}"
+    helm pull "${CHART_REF}" --version "${ENVOY_GATEWAY_VERSION}" -d "${cache_dir}" >&2
     [[ -f "${asset_path}" ]] || die "helm pull did not create ${asset_name}"
   fi
 
