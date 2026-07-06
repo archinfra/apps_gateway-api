@@ -13,7 +13,7 @@ CHART_REF="oci://docker.io/envoyproxy/gateway-helm"
 USE_LOCAL_ASSETS=0
 SKIP_IMAGES=0
 KEEP_BUILD=0
-ENVOY_PROXY_IMAGE="docker.io/envoyproxy/envoy:distroless-v1.35.0"
+ENVOY_PROXY_IMAGE="docker.io/envoyproxy/envoy:distroless-v1.38.3"
 
 usage() {
   cat <<USAGE
