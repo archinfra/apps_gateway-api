@@ -2,6 +2,16 @@ name: offline-run-packages
 
 on:
   workflow_dispatch:
+    inputs:
+      gateway_api_version:
+        description: "Gateway API version without leading v"
+        required: false
+        default: ""
+      use_local_assets:
+        description: "Use committed files under upstream/ instead of downloading release assets"
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [main]
     tags: ["v*"]
@@ -11,8 +21,12 @@ permissions:
 
 jobs:
   build:
-    name: build-gateway-api-run
+    name: build-${{ matrix.arch }}
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,21 +34,41 @@ jobs:
       - name: Validate package files
         shell: bash
         run: |
+          set -euo pipefail
           bash -n build.sh install.sh
           grep -qx '__PAYLOAD_BELOW__' install.sh
+          test "$(tr -d '[:space:]' < images/image.json)" = "[]"
 
       - name: Build offline package
         shell: bash
         run: |
-          bash build.sh
+          set -euo pipefail
+          args=(--arch "${{ matrix.arch }}")
+          if [[ -n "${{ github.event.inputs.gateway_api_version || '' }}" ]]; then
+            args+=(--version "${{ github.event.inputs.gateway_api_version }}")
+          fi
+          if [[ "${{ github.event.inputs.use_local_assets || false }}" == "true" ]]; then
+            args+=(--use-local-assets)
+          fi
+          bash build.sh "${args[@]}"
+
+      - name: Smoke test installer help
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_file="$(find dist -maxdepth 1 -name '*-${{ matrix.arch }}.run' -type f | head -n 1)"
+          test -n "${run_file}"
+          "${run_file}" help >/tmp/installer-help.txt
+          grep -q 'Gateway API CRDs' /tmp/installer-help.txt
+          (cd dist && sha256sum -c "$(basename "${run_file}").sha256")
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gateway-api-run
+          name: gateway-api-run-${{ matrix.arch }}
           path: |
-            dist/*.run
-            dist/*.sha256
+            dist/*-${{ matrix.arch }}.run
+            dist/*-${{ matrix.arch }}.run.sha256
           if-no-files-found: error
 
   release:
