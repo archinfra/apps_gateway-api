@@ -1,1 +1,34 @@
-[]
+[
+  {
+    "name": "envoy-gateway",
+    "arch": "amd64",
+    "platform": "linux/amd64",
+    "pull": "docker.io/envoyproxy/gateway:${ENVOY_GATEWAY_VERSION}",
+    "tag": "sealos.hub:5000/kube4/envoyproxy/gateway:${ENVOY_GATEWAY_VERSION}",
+    "tar": "envoy-gateway-amd64.tar"
+  },
+  {
+    "name": "envoy-proxy",
+    "arch": "amd64",
+    "platform": "linux/amd64",
+    "pull": "${ENVOY_PROXY_IMAGE}",
+    "tag": "${ENVOY_PROXY_TARGET}",
+    "tar": "envoy-proxy-amd64.tar"
+  },
+  {
+    "name": "envoy-gateway",
+    "arch": "arm64",
+    "platform": "linux/arm64",
+    "pull": "docker.io/envoyproxy/gateway:${ENVOY_GATEWAY_VERSION}",
+    "tag": "sealos.hub:5000/kube4/envoyproxy/gateway:${ENVOY_GATEWAY_VERSION}",
+    "tar": "envoy-gateway-arm64.tar"
+  },
+  {
+    "name": "envoy-proxy",
+    "arch": "arm64",
+    "platform": "linux/arm64",
+    "pull": "${ENVOY_PROXY_IMAGE}",
+    "tag": "${ENVOY_PROXY_TARGET}",
+    "tar": "envoy-proxy-arm64.tar"
+  }
+]
