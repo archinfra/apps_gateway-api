@@ -1,5 +1,7 @@
-dist/
 .build/
+dist/
 payload.tar.gz
 *.run
-*.sha256
+*.run.sha256
+upstream/*.yaml
+!upstream/.gitkeep
