@@ -1,41 +1,32 @@
 # apps_gateway-api
 
-Gateway API offline `.run` installer package.
+Gateway API + Envoy Gateway offline `.run` installer package.
 
-This package is a **CRD-only** offline installer for Kubernetes Gateway API. Gateway API itself is an API specification and a set of Kubernetes CRDs; it is **not** a gateway controller and does **not** run data-plane pods by itself.
+This package is no longer a CRD-only bundle. It installs a complete, usable Gateway API implementation based on **Envoy Gateway**:
+
+- Gateway API CRDs
+- Envoy Gateway extension CRDs
+- Envoy Gateway controller
+- managed Envoy Proxy data plane image
+- default `GatewayClass`
+- default HTTP `Gateway`
+
+Envoy Gateway manages Envoy Proxy as a Kubernetes Gateway API implementation. Gateway API resources dynamically provision and configure the managed Envoy proxies.
 
 ## Version
 
-- Gateway API: `v1.5.1`
-- package type: CRD-only / architecture-independent payload
-- release artifact shape: multi-arch `.run` files for normal offline delivery conventions
-- included channels:
-  - `standard-install.yaml`
-  - `experimental-install.yaml`
+- Envoy Gateway: `v1.5.0`
+- packaged chart: `oci://docker.io/envoyproxy/gateway-helm`
+- package type: Helm chart + offline images + bootstrap Gateway resources
+- architectures: `amd64`, `arm64`
 
-## What this package installs
+## Why Envoy Gateway
 
-The `standard` channel is the default and is enough for most HTTP/gRPC ingress use cases:
+Gateway API CRDs alone only define the API surface. They do not reconcile `Gateway`, `HTTPRoute`, or `GRPCRoute`, and they do not create any proxy pods or Services.
 
-- `GatewayClass`
-- `Gateway`
-- `HTTPRoute`
-- `GRPCRoute`
-- `ReferenceGrant`
+This package uses Envoy Gateway as the controller/data-plane implementation because it is Kubernetes Gateway API native and manages Envoy Proxy as the actual L7 data plane.
 
-The `experimental` channel contains the standard CRDs plus experimental APIs, for example TCP/TLS/UDP route or policy resources depending on the upstream Gateway API release.
-
-## What this package does not install
-
-This package does **not** install a Gateway API implementation/controller. You still need one of the Gateway API implementations, for example Envoy Gateway, Cilium, Istio, NGINX Gateway Fabric, Traefik, HAProxy Ingress, Gloo Gateway, or kgateway.
-
-The normal order is:
-
-1. Install Gateway API CRDs with this package.
-2. Install a Gateway API implementation/controller.
-3. Confirm that a `GatewayClass` exists.
-4. Create a `Gateway` that references the `GatewayClass`.
-5. Create `HTTPRoute`, `GRPCRoute`, or other Route resources that attach to the Gateway.
+The official Envoy Gateway Helm chart installs Gateway API CRDs and Envoy Gateway CRDs by default, then installs the `envoy-gateway` controller. This package vendors that chart into the `.run` payload and also packages the required container images for air-gapped environments.
 
 ## Repository layout
 
@@ -45,18 +36,33 @@ apps_gateway-api/
   build.sh
   install.sh
   images/
-    image.json              # [] because Gateway API CRDs contain no container images
+    image.json
   upstream/
-    .gitkeep                # optional local release assets go here
+    .gitkeep
   .github/workflows/
     offline-run-packages.yml
 ```
 
-Generated directories are ignored by git:
+Generated directories and release assets are ignored by git:
 
 ```text
 .build/
 dist/
+upstream/*.tgz
+```
+
+## Packaged images
+
+The package includes multi-architecture images for:
+
+- `docker.io/envoyproxy/gateway:<version>`
+- `docker.io/envoyproxy/envoy:distroless-v1.35.0`
+
+The installer retags and pushes these images to the target registry, for example:
+
+```text
+sealos.hub:5000/kube4/envoyproxy/gateway:v1.5.0
+sealos.hub:5000/kube4/envoyproxy/envoy:distroless-v1.35.0
 ```
 
 ## Build locally
@@ -64,199 +70,160 @@ dist/
 Build host requirements:
 
 - Linux shell
-- `curl` when downloading upstream Gateway API release assets
+- `helm`
+- `docker`
+- `python3`
 - `tar`
 - `sha256sum`
 
-No `jq`, Python, Docker, Helm, or Kubernetes cluster is required for packaging.
-
-Build both offline installer labels:
+Build both architectures:
 
 ```bash
 bash build.sh --arch all
 ```
 
-Build a single installer label:
+Build one architecture:
 
 ```bash
 bash build.sh --arch amd64
 bash build.sh --arch arm64
 ```
 
-Use a different upstream Gateway API version:
+Build another Envoy Gateway version:
 
 ```bash
-bash build.sh --arch all --version 1.5.1
+bash build.sh --arch all --version v1.5.0
 ```
 
-Use pre-downloaded release assets under `upstream/`:
+Use a pre-downloaded Helm chart:
 
 ```text
-upstream/standard-install.yaml
-upstream/experimental-install.yaml
+upstream/gateway-helm-v1.5.0.tgz
 ```
 
 ```bash
 bash build.sh --arch all --use-local-assets
 ```
 
+For syntax/package smoke tests only, skip image tar packaging:
+
+```bash
+bash build.sh --arch amd64 --use-local-assets --skip-images
+```
+
 Artifacts are written to `dist/`:
 
 ```text
-dist/gateway-api-1.5.1-amd64.run
-dist/gateway-api-1.5.1-amd64.run.sha256
-dist/gateway-api-1.5.1-arm64.run
-dist/gateway-api-1.5.1-arm64.run.sha256
+dist/gateway-api-envoy-v1.5.0-amd64.run
+dist/gateway-api-envoy-v1.5.0-amd64.run.sha256
+dist/gateway-api-envoy-v1.5.0-arm64.run
+dist/gateway-api-envoy-v1.5.0-arm64.run.sha256
 ```
 
-> The CRD payload is architecture-independent. The `amd64` and `arm64` suffixes exist so offline package release artifacts match the same multi-architecture convention as image-carrying Kubernetes packages.
-
-## Install in an offline Kubernetes environment
+## Offline install
 
 Target host requirements:
 
 - `bash`
 - common Linux base tools: `awk`, `head`, `wc`, `dd`, `od`, `tail`, `tar`
-- `kubectl` with cluster-admin permission for CRD installation
-- optional `sha256sum`, only for checking the `.sha256` file before running the installer
+- `kubectl`
+- `helm`
+- `docker`, unless `--skip-image-prepare` is used
+- optional `sha256sum` for artifact verification
 
-The target host does **not** need `jq`, Python, Docker, Helm, or internet access.
-
-Install standard CRDs:
-
-```bash
-sha256sum -c gateway-api-1.5.1-amd64.run.sha256
-chmod +x gateway-api-1.5.1-amd64.run
-./gateway-api-1.5.1-amd64.run install -y
-```
-
-Install experimental CRDs:
+Install the full Envoy Gateway stack:
 
 ```bash
-./gateway-api-1.5.1-amd64.run install --channel experimental -y
-```
+sha256sum -c gateway-api-envoy-v1.5.0-amd64.run.sha256
+chmod +x gateway-api-envoy-v1.5.0-amd64.run
 
-Install with an explicit kubeconfig/context:
-
-```bash
-./gateway-api-1.5.1-amd64.run install \
-  --kubeconfig /etc/kubernetes/admin.conf \
-  --context my-cluster \
-  --channel standard \
+./gateway-api-envoy-v1.5.0-amd64.run install \
+  --registry sealos.hub:5000/kube4 \
+  --registry-user admin \
+  --registry-pass 'passw0rd' \
   -y
 ```
 
-The installer uses server-side apply by default because Gateway API CRD manifests are large. If there is a field ownership conflict during an upgrade:
+If the images already exist in the target registry:
 
 ```bash
-./gateway-api-1.5.1-amd64.run install --channel standard --force-conflicts -y
+./gateway-api-envoy-v1.5.0-amd64.run install \
+  --registry sealos.hub:5000/kube4 \
+  --skip-image-prepare \
+  -y
 ```
 
-Dry-run against the target apiserver:
+Use an explicit kubeconfig/context:
 
 ```bash
-./gateway-api-1.5.1-amd64.run install --channel standard --dry-run -y
+./gateway-api-envoy-v1.5.0-amd64.run install \
+  --kubeconfig /etc/kubernetes/admin.conf \
+  --context my-cluster \
+  --registry sealos.hub:5000/kube4 \
+  -y
 ```
 
-Compatibility flags such as `--registry`, `--registry-user`, `--registry-pass`, and `--skip-image-prepare` are accepted as no-ops. This keeps the installer compatible with the broader offline `.run` convention even though this package has no images.
-
-## Status
+Render without applying:
 
 ```bash
-./gateway-api-1.5.1-amd64.run status
+./gateway-api-envoy-v1.5.0-amd64.run install \
+  --dry-run \
+  --skip-image-prepare \
+  -y
 ```
 
-Equivalent manual checks:
+## What gets installed
+
+Default install creates:
+
+| Resource | Default |
+| --- | --- |
+| Controller namespace | `envoy-gateway-system` |
+| Helm release | `eg` |
+| Controller Deployment | `envoy-gateway` |
+| GatewayClass | `eg` |
+| Gateway namespace | `default` |
+| Gateway | `edge-gateway` |
+| Listener | HTTP `:80`, routes from all namespaces |
+
+The default bootstrap can be changed:
 
 ```bash
-kubectl get crd | grep gateway.networking
-kubectl api-resources --api-group=gateway.networking.k8s.io
-kubectl get gatewayclass
-kubectl get gateways -A
-kubectl get httproutes -A
-kubectl get grpcroutes -A
+./gateway-api-envoy-v1.5.0-amd64.run install \
+  --gateway-class eg \
+  --gateway-namespace gateway-system \
+  --gateway-name edge-gateway \
+  -y
 ```
 
-## Uninstall
-
-Safe uninstall does not delete CRDs:
+Install only the controller and CRDs, without default Gateway bootstrap:
 
 ```bash
-./gateway-api-1.5.1-amd64.run uninstall -y
+./gateway-api-envoy-v1.5.0-amd64.run install --no-bootstrap -y
 ```
 
-Actually deleting CRDs is dangerous because Kubernetes will also delete all custom resources of those CRD types, such as `Gateway`, `HTTPRoute`, and `GRPCRoute`. Use this only when you are sure:
+Override images when the registry layout is different:
 
 ```bash
-./gateway-api-1.5.1-amd64.run uninstall --channel standard --delete-crds -y
+./gateway-api-envoy-v1.5.0-amd64.run install \
+  --skip-image-prepare \
+  --gateway-image registry.local/kube4/envoyproxy/gateway:v1.5.0 \
+  --envoy-proxy-image registry.local/kube4/envoyproxy/envoy:distroless-v1.35.0 \
+  -y
 ```
 
-## Example usage after installing a controller
-
-Check GatewayClass:
+Pass extra Helm values:
 
 ```bash
-kubectl get gatewayclass
+./gateway-api-envoy-v1.5.0-amd64.run install \
+  --set deployment.replicas=2 \
+  --set config.envoyGateway.logging.level.default=debug \
+  -y
 ```
 
-Example application:
+## Use it
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: whoami
-  namespace: default
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: whoami
-  template:
-    metadata:
-      labels:
-        app: whoami
-    spec:
-      containers:
-      - name: whoami
-        image: traefik/whoami:v1.10
-        ports:
-        - containerPort: 80
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: whoami
-  namespace: default
-spec:
-  selector:
-    app: whoami
-  ports:
-  - name: http
-    port: 80
-    targetPort: 80
-```
-
-Example Gateway. Replace `YOUR_GATEWAY_CLASS` with the GatewayClass created by your controller:
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: shared-gateway
-  namespace: default
-spec:
-  gatewayClassName: YOUR_GATEWAY_CLASS
-  listeners:
-  - name: http
-    port: 80
-    protocol: HTTP
-    allowedRoutes:
-      namespaces:
-        from: All
-```
-
-Example HTTPRoute:
+Create an application Service, then attach an `HTTPRoute` to the default Gateway:
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -266,8 +233,7 @@ metadata:
   namespace: default
 spec:
   parentRefs:
-  - name: shared-gateway
-    namespace: default
+  - name: edge-gateway
   hostnames:
   - whoami.example.com
   rules:
@@ -280,31 +246,51 @@ spec:
       port: 80
 ```
 
-Apply:
+Check the route:
 
 ```bash
-kubectl apply -f whoami.yaml
-kubectl apply -f gateway.yaml
-kubectl apply -f httproute.yaml
+kubectl describe gateway edge-gateway -n default
+kubectl describe httproute whoami -n default
+kubectl get svc -A | grep envoy
 ```
 
-Check whether the route is accepted:
+## Status
 
 ```bash
-kubectl describe gateway shared-gateway
-kubectl describe httproute whoami
-kubectl get gateway shared-gateway -o yaml
-kubectl get httproute whoami -o yaml
+./gateway-api-envoy-v1.5.0-amd64.run status
 ```
 
-For access, use the external address or NodePort exposed by your chosen Gateway API controller. This package only installs the CRDs, so it does not create a LoadBalancer, NodePort, or proxy pod.
+Equivalent manual checks:
+
+```bash
+helm list -n envoy-gateway-system
+kubectl get pods -n envoy-gateway-system -o wide
+kubectl get gatewayclass
+kubectl get gateways -A
+kubectl get httproutes -A
+kubectl get envoyproxies.gateway.envoyproxy.io -A
+```
+
+## Uninstall
+
+Uninstall controller and bootstrap resources, keeping the namespace:
+
+```bash
+./gateway-api-envoy-v1.5.0-amd64.run uninstall -y
+```
+
+Uninstall and delete the controller namespace:
+
+```bash
+./gateway-api-envoy-v1.5.0-amd64.run uninstall --delete-namespace -y
+```
 
 ## GitHub Actions
 
 The workflow `.github/workflows/offline-run-packages.yml` builds two artifacts:
 
-- `gateway-api-run-amd64`
-- `gateway-api-run-arm64`
+- `gateway-api-envoy-run-amd64`
+- `gateway-api-envoy-run-arm64`
 
 Triggers:
 
@@ -318,18 +304,19 @@ When a `v*` tag is pushed, the generated `.run` and `.sha256` files are attached
 
 ```bash
 bash -n build.sh install.sh
+python3 -m json.tool images/image.json >/dev/null
 bash build.sh --arch amd64
 bash build.sh --arch arm64
-(cd dist && sha256sum -c gateway-api-*-amd64.run.sha256)
-(cd dist && sha256sum -c gateway-api-*-arm64.run.sha256)
-./dist/gateway-api-*-amd64.run help
-./dist/gateway-api-*-arm64.run help
+(cd dist && sha256sum -c gateway-api-envoy-*-amd64.run.sha256)
+(cd dist && sha256sum -c gateway-api-envoy-*-arm64.run.sha256)
+./dist/gateway-api-envoy-*-amd64.run help
+./dist/gateway-api-envoy-*-arm64.run help
 ```
 
 In a Kubernetes test cluster:
 
 ```bash
-./dist/gateway-api-1.5.1-amd64.run install --dry-run -y
-./dist/gateway-api-1.5.1-amd64.run install -y
-./dist/gateway-api-1.5.1-amd64.run status
+./dist/gateway-api-envoy-v1.5.0-amd64.run install --dry-run --skip-image-prepare -y
+./dist/gateway-api-envoy-v1.5.0-amd64.run install --registry sealos.hub:5000/kube4 -y
+./dist/gateway-api-envoy-v1.5.0-amd64.run status
 ```
