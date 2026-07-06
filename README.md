@@ -8,6 +8,7 @@ This package is not a CRD-only bundle. It installs a complete Gateway API implem
 - Envoy Gateway extension CRDs
 - Envoy Gateway controller
 - managed Envoy Proxy data plane image
+- default `EnvoyProxy`
 - default `GatewayClass`
 - default HTTP `Gateway`
 
@@ -28,6 +29,8 @@ Gateway API CRDs alone only define the API surface. They do not reconcile `Gatew
 This package uses Envoy Gateway as the controller and data-plane implementation because it is Kubernetes Gateway API native and manages Envoy Proxy as the actual L7 data plane.
 
 The official Envoy Gateway Helm chart installs Gateway API CRDs and Envoy Gateway CRDs by default, then installs the `envoy-gateway` controller. This package vendors that chart into the `.run` payload and packages the required container images for air-gapped environments.
+
+The default bootstrap creates an `EnvoyProxy` resource and makes `GatewayClass.parametersRef` point to it. This pins the managed Envoy Proxy data-plane Deployment to the packaged or private-registry image instead of allowing it to fall back to Docker Hub.
 
 ## Repository layout
 
@@ -140,6 +143,13 @@ Render without applying:
 ./gateway-api-envoy-v1.8.2-amd64.run install --dry-run --skip-image-prepare -y
 ```
 
+Help also works without an action:
+
+```bash
+./gateway-api-envoy-v1.8.2-amd64.run -h
+./gateway-api-envoy-v1.8.2-amd64.run --help
+```
+
 ## What gets installed
 
 Default install creates:
@@ -149,7 +159,8 @@ Default install creates:
 | Controller namespace | `envoy-gateway-system` |
 | Helm release | `eg` |
 | Controller Deployment | `envoy-gateway` |
-| GatewayClass | `eg` |
+| EnvoyProxy | `envoy-gateway-system/eg-envoy-proxy` |
+| GatewayClass | `eg`, with `parametersRef` to the EnvoyProxy |
 | Gateway namespace | `default` |
 | Gateway | `edge-gateway` |
 | Listener | HTTP `:80`, routes from all namespaces |
@@ -157,10 +168,10 @@ Default install creates:
 The default bootstrap can be changed:
 
 ```bash
-./gateway-api-envoy-v1.8.2-amd64.run install --gateway-class eg --gateway-namespace gateway-system --gateway-name edge-gateway -y
+./gateway-api-envoy-v1.8.2-amd64.run install --gateway-class eg --gateway-namespace gateway-system --gateway-name edge-gateway --envoy-proxy-name eg-envoy-proxy -y
 ```
 
-Install only the controller and CRDs, without default Gateway bootstrap:
+Install only the controller and CRDs, without default EnvoyProxy/Gateway bootstrap:
 
 ```bash
 ./gateway-api-envoy-v1.8.2-amd64.run install --no-bootstrap -y
@@ -271,7 +282,8 @@ bash build.sh --arch arm64
 (cd dist && sha256sum -c gateway-api-envoy-*-amd64.run.sha256)
 (cd dist && sha256sum -c gateway-api-envoy-*-arm64.run.sha256)
 ./dist/gateway-api-envoy-*-amd64.run help
-./dist/gateway-api-envoy-*-arm64.run help
+./dist/gateway-api-envoy-*-amd64.run -h
+./dist/gateway-api-envoy-*-arm64.run --help
 ```
 
 In a Kubernetes test cluster:
