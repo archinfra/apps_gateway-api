@@ -7,9 +7,14 @@ DEFAULT_REGISTRY="sealos.hub:5000/kube4"
 DEFAULT_WAIT_TIMEOUT="10m"
 DEFAULT_GATEWAY_CLASS="eg"
 DEFAULT_GATEWAY_NAME="edge-gateway"
+DEFAULT_ENVOY_PROXY_NAME="eg-envoy-proxy"
 
 ACTION="${1:-help}"
-if [[ $# -gt 0 ]]; then shift; fi
+if [[ "${ACTION}" == "-h" || "${ACTION}" == "--help" ]]; then
+  ACTION="help"
+elif [[ $# -gt 0 ]]; then
+  shift
+fi
 
 NAMESPACE="${DEFAULT_NAMESPACE}"
 REGISTRY="${DEFAULT_REGISTRY}"
@@ -26,6 +31,7 @@ DELETE_NAMESPACE=0
 GATEWAY_CLASS="${DEFAULT_GATEWAY_CLASS}"
 GATEWAY_NAME="${DEFAULT_GATEWAY_NAME}"
 GATEWAY_NAMESPACE="default"
+ENVOY_PROXY_NAME="${DEFAULT_ENVOY_PROXY_NAME}"
 CONTROLLER_REPLICAS="1"
 HELM_BIN="${HELM:-helm}"
 KUBECTL_BIN="${KUBECTL:-kubectl}"
@@ -42,10 +48,12 @@ Usage:
   ./gateway-api-envoy-<version>-<arch>.run status [options]
   ./gateway-api-envoy-<version>-<arch>.run uninstall [options]
   ./gateway-api-envoy-<version>-<arch>.run help
+  ./gateway-api-envoy-<version>-<arch>.run -h
+  ./gateway-api-envoy-<version>-<arch>.run --help
 
 Actions:
   install      Load/push images, install Envoy Gateway, and optionally create GatewayClass/Gateway.
-  status       Show Envoy Gateway, Gateway API, and bootstrap resource status.
+  status       Show Envoy Gateway, Gateway API, EnvoyProxy, and bootstrap resource status.
   uninstall    Remove bootstrap resources and uninstall Envoy Gateway Helm release.
   help         Show this help.
 
@@ -56,12 +64,13 @@ Options:
   --registry-pass <pass>          Target registry password.
   --gateway-image <image>         Override Envoy Gateway controller image.
   --envoy-proxy-image <image>     Override managed Envoy Proxy data-plane image.
+  --envoy-proxy-name <name>       EnvoyProxy resource name for data-plane config. Default: ${DEFAULT_ENVOY_PROXY_NAME}
   --skip-image-prepare            Skip docker load/tag/push. Use when images already exist.
   --controller-replicas <n>       Envoy Gateway controller replicas. Default: ${CONTROLLER_REPLICAS}
   --gateway-class <name>          GatewayClass to create. Default: ${DEFAULT_GATEWAY_CLASS}
   --gateway-name <name>           Gateway to create. Default: ${DEFAULT_GATEWAY_NAME}
   --gateway-namespace <ns>        Gateway namespace. Default: default.
-  --no-bootstrap                  Install controller only; do not create GatewayClass/Gateway.
+  --no-bootstrap                  Install controller only; do not create EnvoyProxy/GatewayClass/Gateway.
   --set <key=value>               Extra Helm --set-string value, repeatable.
   --wait-timeout <duration>       Helm/kubectl wait timeout. Default: ${DEFAULT_WAIT_TIMEOUT}
   --dry-run                       Render Helm chart and bootstrap YAML without applying.
@@ -74,7 +83,8 @@ Options:
 Notes:
   - This package installs a complete Envoy Gateway stack, not just Gateway API CRDs.
   - Envoy Gateway Helm chart installs Gateway API CRDs and Envoy Gateway CRDs by default.
-  - The default bootstrap creates an HTTP Gateway listening on port 80 and allowing routes from all namespaces.
+  - The default bootstrap creates an EnvoyProxy and makes GatewayClass.parametersRef point to it.
+  - EnvoyProxy pins managed Envoy Proxy data-plane pods to the packaged/private-registry image.
 USAGE
 }
 
@@ -90,6 +100,7 @@ while [[ $# -gt 0 ]]; do
     --registry-pass) REGISTRY_PASS="${2:-}"; shift 2 ;;
     --gateway-image) GATEWAY_IMAGE="${2:-}"; shift 2 ;;
     --envoy-proxy-image) ENVOY_PROXY_IMAGE="${2:-}"; shift 2 ;;
+    --envoy-proxy-name) ENVOY_PROXY_NAME="${2:-}"; shift 2 ;;
     --skip-image-prepare) SKIP_IMAGE_PREPARE=1; shift ;;
     --controller-replicas) CONTROLLER_REPLICAS="${2:-}"; shift 2 ;;
     --gateway-class) GATEWAY_CLASS="${2:-}"; shift 2 ;;
@@ -115,6 +126,7 @@ if [[ "${ACTION}" == "help" ]]; then usage; exit 0; fi
 [[ -n "${GATEWAY_CLASS}" ]] || die "gateway class cannot be empty"
 [[ -n "${GATEWAY_NAME}" ]] || die "gateway name cannot be empty"
 [[ -n "${GATEWAY_NAMESPACE}" ]] || die "gateway namespace cannot be empty"
+[[ -n "${ENVOY_PROXY_NAME}" ]] || die "envoy proxy name cannot be empty"
 
 k() { "${KUBECTL_BIN}" "${KUBECTL_ARGS[@]}" "$@"; }
 h() { "${HELM_BIN}" "${HELM_ARGS[@]}" "$@"; }
@@ -165,7 +177,9 @@ resolve_images() {
 confirm() {
   [[ "${YES}" == "1" ]] && return 0
   echo "About to ${ACTION} Envoy Gateway in namespace '${NAMESPACE}'."
-  [[ "${INSTALL_BOOTSTRAP}" == "1" ]] && echo "Bootstrap GatewayClass/Gateway: ${GATEWAY_CLASS}/${GATEWAY_NAMESPACE}/${GATEWAY_NAME}"
+  if [[ "${INSTALL_BOOTSTRAP}" == "1" ]]; then
+    echo "Bootstrap EnvoyProxy/GatewayClass/Gateway: ${NAMESPACE}/${ENVOY_PROXY_NAME} -> ${GATEWAY_CLASS} -> ${GATEWAY_NAMESPACE}/${GATEWAY_NAME}"
+  fi
   if [[ "${ACTION}" == "uninstall" && "${DELETE_NAMESPACE}" == "1" ]]; then
     echo "WARNING: namespace ${NAMESPACE} will also be deleted."
   fi
@@ -242,12 +256,35 @@ helm_install_gateway() {
 
 render_bootstrap() {
   cat <<YAML
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: ${ENVOY_PROXY_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        container:
+          image: ${ENVOY_PROXY_IMAGE}
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
   name: ${GATEWAY_CLASS}
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: ${ENVOY_PROXY_NAME}
+    namespace: ${NAMESPACE}
 ---
 apiVersion: v1
 kind: Namespace
@@ -274,11 +311,11 @@ YAML
 apply_bootstrap() {
   [[ "${INSTALL_BOOTSTRAP}" == "1" ]] || return 0
   if [[ "${DRY_RUN}" == "1" ]]; then
-    info "render bootstrap GatewayClass/Gateway"
+    info "render bootstrap EnvoyProxy/GatewayClass/Gateway"
     render_bootstrap >/dev/null
     return 0
   fi
-  info "apply default GatewayClass/Gateway bootstrap"
+  info "apply default EnvoyProxy/GatewayClass/Gateway bootstrap"
   render_bootstrap | k apply -f -
 }
 
@@ -327,9 +364,10 @@ uninstall_app() {
   need "${HELM_BIN}"
   confirm
   if [[ "${INSTALL_BOOTSTRAP}" == "1" ]]; then
-    info "delete bootstrap Gateway/GatewayClass"
+    info "delete bootstrap Gateway/GatewayClass/EnvoyProxy"
     k delete gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" --ignore-not-found=true || true
     k delete gatewayclass "${GATEWAY_CLASS}" --ignore-not-found=true || true
+    k delete envoyproxy "${ENVOY_PROXY_NAME}" -n "${NAMESPACE}" --ignore-not-found=true || true
   fi
   if h status eg -n "${NAMESPACE}" >/dev/null 2>&1; then
     info "helm uninstall eg"
