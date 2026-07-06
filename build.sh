@@ -40,7 +40,7 @@ USAGE
 }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
-info() { echo ">>> $*"; }
+info() { echo ">>> $*" >&2; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
 
 while [[ $# -gt 0 ]]; do
