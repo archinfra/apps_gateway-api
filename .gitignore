@@ -4,4 +4,6 @@ payload.tar.gz
 *.run
 *.run.sha256
 upstream/*.yaml
+upstream/*.tgz
+upstream/*.tar.gz
 !upstream/.gitkeep
