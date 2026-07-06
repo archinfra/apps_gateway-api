@@ -2,7 +2,7 @@
 
 Gateway API + Envoy Gateway offline `.run` installer package.
 
-This package is no longer a CRD-only bundle. It installs a complete, usable Gateway API implementation based on **Envoy Gateway**:
+This package is not a CRD-only bundle. It installs a complete Gateway API implementation based on **Envoy Gateway**:
 
 - Gateway API CRDs
 - Envoy Gateway extension CRDs
@@ -11,22 +11,23 @@ This package is no longer a CRD-only bundle. It installs a complete, usable Gate
 - default `GatewayClass`
 - default HTTP `Gateway`
 
-Envoy Gateway manages Envoy Proxy as a Kubernetes Gateway API implementation. Gateway API resources dynamically provision and configure the managed Envoy proxies.
+Envoy Gateway manages Envoy Proxy as a Kubernetes Gateway API implementation. Gateway API resources dynamically provision and configure managed Envoy proxies.
 
 ## Version
 
-- Envoy Gateway: `v1.5.0`
+- Envoy Gateway: `v1.8.2`
+- Envoy Proxy data plane: `docker.io/envoyproxy/envoy:distroless-v1.38.3`
 - packaged chart: `oci://docker.io/envoyproxy/gateway-helm`
 - package type: Helm chart + offline images + bootstrap Gateway resources
 - architectures: `amd64`, `arm64`
 
 ## Why Envoy Gateway
 
-Gateway API CRDs alone only define the API surface. They do not reconcile `Gateway`, `HTTPRoute`, or `GRPCRoute`, and they do not create any proxy pods or Services.
+Gateway API CRDs alone only define the API surface. They do not reconcile `Gateway`, `HTTPRoute`, or `GRPCRoute`, and they do not create proxy pods or Services.
 
-This package uses Envoy Gateway as the controller/data-plane implementation because it is Kubernetes Gateway API native and manages Envoy Proxy as the actual L7 data plane.
+This package uses Envoy Gateway as the controller and data-plane implementation because it is Kubernetes Gateway API native and manages Envoy Proxy as the actual L7 data plane.
 
-The official Envoy Gateway Helm chart installs Gateway API CRDs and Envoy Gateway CRDs by default, then installs the `envoy-gateway` controller. This package vendors that chart into the `.run` payload and also packages the required container images for air-gapped environments.
+The official Envoy Gateway Helm chart installs Gateway API CRDs and Envoy Gateway CRDs by default, then installs the `envoy-gateway` controller. This package vendors that chart into the `.run` payload and packages the required container images for air-gapped environments.
 
 ## Repository layout
 
@@ -56,25 +57,16 @@ upstream/*.tgz
 The package includes multi-architecture images for:
 
 - `docker.io/envoyproxy/gateway:<version>`
-- `docker.io/envoyproxy/envoy:distroless-v1.35.0`
+- `docker.io/envoyproxy/envoy:distroless-v1.38.3`
 
 The installer retags and pushes these images to the target registry, for example:
 
 ```text
-sealos.hub:5000/kube4/envoyproxy/gateway:v1.5.0
-sealos.hub:5000/kube4/envoyproxy/envoy:distroless-v1.35.0
+sealos.hub:5000/kube4/envoyproxy/gateway:v1.8.2
+sealos.hub:5000/kube4/envoyproxy/envoy:distroless-v1.38.3
 ```
 
 ## Build locally
-
-Build host requirements:
-
-- Linux shell
-- `helm`
-- `docker`
-- `python3`
-- `tar`
-- `sha256sum`
 
 Build both architectures:
 
@@ -92,13 +84,13 @@ bash build.sh --arch arm64
 Build another Envoy Gateway version:
 
 ```bash
-bash build.sh --arch all --version v1.5.0
+bash build.sh --arch all --version v1.8.2
 ```
 
 Use a pre-downloaded Helm chart:
 
 ```text
-upstream/gateway-helm-v1.5.0.tgz
+upstream/gateway-helm-v1.8.2.tgz
 ```
 
 ```bash
@@ -114,62 +106,38 @@ bash build.sh --arch amd64 --use-local-assets --skip-images
 Artifacts are written to `dist/`:
 
 ```text
-dist/gateway-api-envoy-v1.5.0-amd64.run
-dist/gateway-api-envoy-v1.5.0-amd64.run.sha256
-dist/gateway-api-envoy-v1.5.0-arm64.run
-dist/gateway-api-envoy-v1.5.0-arm64.run.sha256
+dist/gateway-api-envoy-v1.8.2-amd64.run
+dist/gateway-api-envoy-v1.8.2-amd64.run.sha256
+dist/gateway-api-envoy-v1.8.2-arm64.run
+dist/gateway-api-envoy-v1.8.2-arm64.run.sha256
 ```
 
 ## Offline install
 
-Target host requirements:
-
-- `bash`
-- common Linux base tools: `awk`, `head`, `wc`, `dd`, `od`, `tail`, `tar`
-- `kubectl`
-- `helm`
-- `docker`, unless `--skip-image-prepare` is used
-- optional `sha256sum` for artifact verification
-
 Install the full Envoy Gateway stack:
 
 ```bash
-sha256sum -c gateway-api-envoy-v1.5.0-amd64.run.sha256
-chmod +x gateway-api-envoy-v1.5.0-amd64.run
-
-./gateway-api-envoy-v1.5.0-amd64.run install \
-  --registry sealos.hub:5000/kube4 \
-  --registry-user admin \
-  --registry-pass 'passw0rd' \
-  -y
+sha256sum -c gateway-api-envoy-v1.8.2-amd64.run.sha256
+chmod +x gateway-api-envoy-v1.8.2-amd64.run
+./gateway-api-envoy-v1.8.2-amd64.run install --registry sealos.hub:5000/kube4 -y
 ```
 
-If the images already exist in the target registry:
+If images already exist in the target registry:
 
 ```bash
-./gateway-api-envoy-v1.5.0-amd64.run install \
-  --registry sealos.hub:5000/kube4 \
-  --skip-image-prepare \
-  -y
+./gateway-api-envoy-v1.8.2-amd64.run install --registry sealos.hub:5000/kube4 --skip-image-prepare -y
 ```
 
 Use an explicit kubeconfig/context:
 
 ```bash
-./gateway-api-envoy-v1.5.0-amd64.run install \
-  --kubeconfig /etc/kubernetes/admin.conf \
-  --context my-cluster \
-  --registry sealos.hub:5000/kube4 \
-  -y
+./gateway-api-envoy-v1.8.2-amd64.run install --kubeconfig /etc/kubernetes/admin.conf --context my-cluster --registry sealos.hub:5000/kube4 -y
 ```
 
 Render without applying:
 
 ```bash
-./gateway-api-envoy-v1.5.0-amd64.run install \
-  --dry-run \
-  --skip-image-prepare \
-  -y
+./gateway-api-envoy-v1.8.2-amd64.run install --dry-run --skip-image-prepare -y
 ```
 
 ## What gets installed
@@ -189,36 +157,29 @@ Default install creates:
 The default bootstrap can be changed:
 
 ```bash
-./gateway-api-envoy-v1.5.0-amd64.run install \
-  --gateway-class eg \
-  --gateway-namespace gateway-system \
-  --gateway-name edge-gateway \
-  -y
+./gateway-api-envoy-v1.8.2-amd64.run install --gateway-class eg --gateway-namespace gateway-system --gateway-name edge-gateway -y
 ```
 
 Install only the controller and CRDs, without default Gateway bootstrap:
 
 ```bash
-./gateway-api-envoy-v1.5.0-amd64.run install --no-bootstrap -y
+./gateway-api-envoy-v1.8.2-amd64.run install --no-bootstrap -y
 ```
 
 Override images when the registry layout is different:
 
 ```bash
-./gateway-api-envoy-v1.5.0-amd64.run install \
+./gateway-api-envoy-v1.8.2-amd64.run install \
   --skip-image-prepare \
-  --gateway-image registry.local/kube4/envoyproxy/gateway:v1.5.0 \
-  --envoy-proxy-image registry.local/kube4/envoyproxy/envoy:distroless-v1.35.0 \
+  --gateway-image registry.local/kube4/envoyproxy/gateway:v1.8.2 \
+  --envoy-proxy-image registry.local/kube4/envoyproxy/envoy:distroless-v1.38.3 \
   -y
 ```
 
 Pass extra Helm values:
 
 ```bash
-./gateway-api-envoy-v1.5.0-amd64.run install \
-  --set deployment.replicas=2 \
-  --set config.envoyGateway.logging.level.default=debug \
-  -y
+./gateway-api-envoy-v1.8.2-amd64.run install --set deployment.replicas=2 --set config.envoyGateway.logging.level.default=debug -y
 ```
 
 ## Use it
@@ -257,7 +218,7 @@ kubectl get svc -A | grep envoy
 ## Status
 
 ```bash
-./gateway-api-envoy-v1.5.0-amd64.run status
+./gateway-api-envoy-v1.8.2-amd64.run status
 ```
 
 Equivalent manual checks:
@@ -276,13 +237,13 @@ kubectl get envoyproxies.gateway.envoyproxy.io -A
 Uninstall controller and bootstrap resources, keeping the namespace:
 
 ```bash
-./gateway-api-envoy-v1.5.0-amd64.run uninstall -y
+./gateway-api-envoy-v1.8.2-amd64.run uninstall -y
 ```
 
 Uninstall and delete the controller namespace:
 
 ```bash
-./gateway-api-envoy-v1.5.0-amd64.run uninstall --delete-namespace -y
+./gateway-api-envoy-v1.8.2-amd64.run uninstall --delete-namespace -y
 ```
 
 ## GitHub Actions
@@ -316,7 +277,7 @@ bash build.sh --arch arm64
 In a Kubernetes test cluster:
 
 ```bash
-./dist/gateway-api-envoy-v1.5.0-amd64.run install --dry-run --skip-image-prepare -y
-./dist/gateway-api-envoy-v1.5.0-amd64.run install --registry sealos.hub:5000/kube4 -y
-./dist/gateway-api-envoy-v1.5.0-amd64.run status
+./dist/gateway-api-envoy-v1.8.2-amd64.run install --dry-run --skip-image-prepare -y
+./dist/gateway-api-envoy-v1.8.2-amd64.run install --registry sealos.hub:5000/kube4 -y
+./dist/gateway-api-envoy-v1.8.2-amd64.run status
 ```
